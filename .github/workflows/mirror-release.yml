@@ -23,7 +23,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y jq curl p7zip-full unzip python3
 
-      - name: Download Stock boot.zz, init_boot.zz and Process Release
+      - name: Download Stock boot and init_boot
         id: process_release
         run: |
           REPO="m4mental/Nothing-phone-2a"
@@ -46,33 +46,80 @@ jobs:
           echo "$RELEASES" | jq -r '.[0].body' > release_body.txt
           echo -e "\n\n---\n### 🛡️ Patched Root Images Added (Compatible with Latest Stable APKs):\n- **APatch SuperKey:** \`${{ github.event.inputs.superkey }}\` (APatch app mein use karein).\n- **FolkPatch SuperKey:** Default (\`su\`).\n- **Boot Images patched:** APatch, FolkPatch.\n- **Init_Boot Images patched:** KernelSU, KernelSU-Next (Works on both Normal & Spoof APKs), SukiSU-Ultra.\n- *(ReSukiSU is excluded as requested)*" >> release_body.txt
           
-          # 1. Download aur decompress boot.zz -> boot.img
-          BOOT_ZZ_URL=$(echo "$RELEASES" | jq -r '.[0].assets[] | select(.name == "boot.zz") | .browser_download_url')
-          if [ ! -z "$BOOT_ZZ_URL" ] && [ "$BOOT_ZZ_URL" != "null" ]; then
-            echo "Downloading boot.zz..."
-            curl -L -o boot.zz "$BOOT_ZZ_URL"
-            python3 -c "import zlib; open('boot.img', 'wb').write(zlib.decompress(open('boot.zz', 'rb').read()))"
+          # Fetch assets JSON array
+          ASSETS_JSON=$(echo "$RELEASES" | jq -c '.[0].assets[]')
+          
+          BOOT_URL=""
+          INIT_BOOT_URL=""
+          IS_BOOT_ZZ=false
+          IS_INIT_BOOT_ZZ=false
+          
+          # Loop through each asset to match names flexibly (handles prefixes or custom names)
+          while IFS= read -r asset; do
+            NAME=$(echo "$asset" | jq -r '.name')
+            URL=$(echo "$asset" | jq -r '.browser_download_url')
+            
+            # Match init_boot (priority to .zz then .img)
+            if [[ "$NAME" == *"init_boot.zz"* || "$NAME" == *"init-boot.zz"* ]]; then
+              INIT_BOOT_URL="$URL"
+              IS_INIT_BOOT_ZZ=true
+            elif [[ "$NAME" == *"init_boot.img"* || "$NAME" == *"init-boot.img"* ]]; then
+              if [ "$IS_INIT_BOOT_ZZ" = "false" ]; then
+                INIT_BOOT_URL="$URL"
+              fi
+            # Match boot (excluding init)
+            elif [[ "$NAME" == *"boot.zz"* && "$NAME" != *"init"* ]]; then
+              BOOT_URL="$URL"
+              IS_BOOT_ZZ=true
+            elif [[ "$NAME" == *"boot.img"* && "$NAME" != *"init"* ]]; then
+              if [ "$IS_BOOT_ZZ" = "false" ]; then
+                BOOT_URL="$URL"
+              fi
+            fi
+          done <<< "$ASSETS_JSON"
+          
+          # Download and process boot.img
+          if [ ! -z "$BOOT_URL" ]; then
+            if [ "$IS_BOOT_ZZ" = "true" ]; then
+              echo "Downloading and decompressing boot.zz from $BOOT_URL..."
+              curl -L -o boot.zz "$BOOT_URL"
+              python3 -c "import zlib; open('boot.img', 'wb').write(zlib.decompress(open('boot.zz', 'rb').read()))" || {
+                echo "Failed to decompress boot.zz using zlib, trying 7z..."
+                7z x boot.zz -o.
+              }
+            else
+              echo "Downloading direct boot.img from $BOOT_URL..."
+              curl -L -o boot.img "$BOOT_URL"
+            fi
           fi
           
-          # 2. Download aur decompress init_boot.zz -> init_boot.img
-          INIT_BOOT_ZZ_URL=$(echo "$RELEASES" | jq -r '.[0].assets[] | select(.name == "init_boot.zz") | .browser_download_url')
-          INIT_BOOT_IMG_URL=$(echo "$RELEASES" | jq -r '.[0].assets[] | select(.name == "init_boot.img") | .browser_download_url')
-          
-          if [ ! -z "$INIT_BOOT_ZZ_URL" ] && [ "$INIT_BOOT_ZZ_URL" != "null" ]; then
-            echo "Downloading init_boot.zz..."
-            curl -L -o init_boot.zz "$INIT_BOOT_ZZ_URL"
-            python3 -c "import zlib; open('init_boot.img', 'wb').write(zlib.decompress(open('init_boot.zz', 'rb').read()))"
-          elif [ ! -z "$INIT_BOOT_IMG_URL" ] && [ "$INIT_BOOT_IMG_URL" != "null" ]; then
-            echo "Downloading init_boot.img..."
-            curl -L -o init_boot.img "$INIT_BOOT_IMG_URL"
+          # Download and process init_boot.img
+          if [ ! -z "$INIT_BOOT_URL" ]; then
+            if [ "$IS_INIT_BOOT_ZZ" = "true" ]; then
+              echo "Downloading and decompressing init_boot.zz from $INIT_BOOT_URL..."
+              curl -L -o init_boot.zz "$INIT_BOOT_URL"
+              python3 -c "import zlib; open('init_boot.img', 'wb').write(zlib.decompress(open('init_boot.zz', 'rb').read()))" || {
+                echo "Failed to decompress init_boot.zz using zlib, trying 7z..."
+                7z x init_boot.zz -o.
+              }
+            else
+              echo "Downloading direct init_boot.img from $INIT_BOOT_URL..."
+              curl -L -o init_boot.img "$INIT_BOOT_URL"
+            fi
           fi
           
-          if [ ! -f boot.img ] || [ ! -f init_boot.img ]; then
-            echo "Error: boot.img ya init_boot.img extract nahi ho paya!"
+          # Verify both are extracted successfully
+          if [ ! -f boot.img ]; then
+            echo "Error: boot.img download link nahi mila ya extract nahi ho paya!"
             exit 1
           fi
           
-          # Original files ko as-is save karna
+          if [ ! -f init_boot.img ]; then
+            echo "Error: init_boot.img download link nahi mila ya extract nahi ho paya!"
+            exit 1
+          fi
+          
+          # Original assets ko save karna
           mkdir assets_to_upload
           echo "$RELEASES" | jq -c '.[0].assets[]' | while read -r asset; do
             ASSET_URL=$(echo "$asset" | jq -r '.browser_download_url')
