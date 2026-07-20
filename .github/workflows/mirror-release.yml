@@ -1,0 +1,193 @@
+name: Root Patch Nothing Phone 2a Partition Images
+
+on:
+  workflow_dispatch:
+    inputs:
+      superkey:
+        description: 'APatch ke liye SuperKey dalein (FolkPatch aur baaki managers ke liye iski zaroorat nahi hai)'
+        required: true
+        default: 'Nothing2aSuperRootKey'
+
+permissions:
+  contents: write
+
+jobs:
+  patch-all:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq curl p7zip-full unzip python3
+
+      - name: Download Stock boot.zz, init_boot.zz and Process Release
+        id: process_release
+        run: |
+          REPO="m4mental/Nothing-phone-2a"
+          
+          # Source repo se releases fetch karna
+          RELEASES=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/$REPO/releases")
+          
+          # Latest release tag dhoondhna
+          LATEST_TAG=$(echo "$RELEASES" | jq -r '.[0].tag_name')
+          
+          if [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" == "null" ]; then
+            echo "Error: m4mental/Nothing-phone-2a ke releases nahi mile!"
+            exit 1
+          fi
+          
+          echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_ENV
+          echo "Found Release: $LATEST_TAG"
+          
+          # Description body save karna aur custom message add karna
+          echo "$RELEASES" | jq -r '.[0].body' > release_body.txt
+          echo -e "\n\n---\n### 🛡️ Patched Root Images Added (Compatible with Latest Stable APKs):\n- **APatch SuperKey:** \`${{ github.event.inputs.superkey }}\` (APatch app mein use karein).\n- **FolkPatch SuperKey:** Default (\`su\`).\n- **Boot Images patched:** APatch, FolkPatch.\n- **Init_Boot Images patched:** KernelSU, KernelSU-Next (Works on both Normal & Spoof APKs), SukiSU-Ultra.\n- *(ReSukiSU is excluded as requested)*" >> release_body.txt
+          
+          # 1. Download aur decompress boot.zz -> boot.img
+          BOOT_ZZ_URL=$(echo "$RELEASES" | jq -r '.[0].assets[] | select(.name == "boot.zz") | .browser_download_url')
+          if [ ! -z "$BOOT_ZZ_URL" ] && [ "$BOOT_ZZ_URL" != "null" ]; then
+            echo "Downloading boot.zz..."
+            curl -L -o boot.zz "$BOOT_ZZ_URL"
+            python3 -c "import zlib; open('boot.img', 'wb').write(zlib.decompress(open('boot.zz', 'rb').read()))"
+          fi
+          
+          # 2. Download aur decompress init_boot.zz -> init_boot.img
+          INIT_BOOT_ZZ_URL=$(echo "$RELEASES" | jq -r '.[0].assets[] | select(.name == "init_boot.zz") | .browser_download_url')
+          INIT_BOOT_IMG_URL=$(echo "$RELEASES" | jq -r '.[0].assets[] | select(.name == "init_boot.img") | .browser_download_url')
+          
+          if [ ! -z "$INIT_BOOT_ZZ_URL" ] && [ "$INIT_BOOT_ZZ_URL" != "null" ]; then
+            echo "Downloading init_boot.zz..."
+            curl -L -o init_boot.zz "$INIT_BOOT_ZZ_URL"
+            python3 -c "import zlib; open('init_boot.img', 'wb').write(zlib.decompress(open('init_boot.zz', 'rb').read()))"
+          elif [ ! -z "$INIT_BOOT_IMG_URL" ] && [ "$INIT_BOOT_IMG_URL" != "null" ]; then
+            echo "Downloading init_boot.img..."
+            curl -L -o init_boot.img "$INIT_BOOT_IMG_URL"
+          fi
+          
+          if [ ! -f boot.img ] || [ ! -f init_boot.img ]; then
+            echo "Error: boot.img ya init_boot.img extract nahi ho paya!"
+            exit 1
+          fi
+          
+          # Original files ko as-is save karna
+          mkdir assets_to_upload
+          echo "$RELEASES" | jq -c '.[0].assets[]' | while read -r asset; do
+            ASSET_URL=$(echo "$asset" | jq -r '.browser_download_url')
+            ASSET_NAME=$(echo "$asset" | jq -r '.name')
+            echo "Downloading stock asset: $ASSET_NAME..."
+            curl -L -o "assets_to_upload/$ASSET_NAME" "$ASSET_URL"
+          done
+
+      - name: Set up magiskboot & kptools
+        run: |
+          # Download magiskboot for Linux x86_64
+          curl -L -o magiskboot "https://github.com/Uevo001/magiskboot-linux/raw/main/x86_64/magiskboot"
+          chmod +x magiskboot
+          
+          # Download kptools (KernelPatch tools) and kpimg-android for APatch/FolkPatch
+          KP_RELEASE=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/bmax121/KernelPatch/releases/latest")
+          KP_TOOLS_URL=$(echo "$KP_RELEASE" | jq -r '.assets[] | select(.name | contains("kptools-linux")) | .browser_download_url')
+          KP_IMG_URL=$(echo "$KP_RELEASE" | jq -r '.assets[] | select(.name | contains("kpimg-android")) | .browser_download_url')
+          
+          curl -L -o kptools-linux "$KP_TOOLS_URL"
+          curl -L -o kpimg-android "$KP_IMG_URL"
+          chmod +x kptools-linux
+
+      - name: Fetch Latest Stable GKI Modules (.ko files)
+        run: |
+          # 1. Official Latest Stable KernelSU Module
+          KSU_RELEASE=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/tiann/KernelSU/releases/latest")
+          KSU_KO_URL=$(echo "$KSU_RELEASE" | jq -r '.assets[] | select(.name | contains("android14-5.15_kernelsu.ko")) | .browser_download_url')
+          curl -L -o kernelsu-official.ko "$KSU_KO_URL"
+          
+          # 2. Latest Stable KernelSU-Next (Normal & Spoof use the same driver)
+          KSUN_RELEASE=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/KernelSU-Next/KernelSU-Next/releases/latest")
+          KSUN_KO_URL=$(echo "$KSUN_RELEASE" | jq -r '.assets[] | select(.name == "android14-5.15_kernelsu.ko") | .browser_download_url')
+          curl -L -o kernelsu-next.ko "$KSUN_KO_URL"
+          
+          # 3. Latest Stable SukiSU-Ultra Module
+          SUKI_RELEASE=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/SukiSU-Ultra/SukiSU-Ultra/releases/latest")
+          SUKI_KO_URL=$(echo "$SUKI_RELEASE" | jq -r '.assets[] | select(.name | contains("android14-5.15_kernelsu.ko")) | .browser_download_url')
+          if [ ! -z "$SUKI_KO_URL" ] && [ "$SUKI_KO_URL" != "null" ]; then
+            curl -L -o sukisu-ultra.ko "$SUKI_KO_URL"
+          else
+            echo "SukiSU-Ultra GKI module not found in official assets, fallback to stable kernelsu-official."
+            cp kernelsu-official.ko sukisu-ultra.ko
+          fi
+
+      - name: Patch boot.img (APatch, FolkPatch)
+        run: |
+          # 1. APatch
+          ./kptools-linux unpack boot.img
+          mv kernel kernel-b
+          ./kptools-linux -p --image kernel-b --skey "${{ github.event.inputs.superkey }}" --kpimg kpimg-android --out kernel
+          ./kptools-linux repack boot.img
+          mv new-boot.img assets_to_upload/${{ env.LATEST_TAG }}-patched-APatch-boot.img
+          rm -f kernel-b kernel ramdisk.cpio new-boot.img
+          
+          # 2. FolkPatch
+          ./kptools-linux unpack boot.img
+          mv kernel kernel-b
+          ./kptools-linux -p --image kernel-b --skey "su" --kpimg kpimg-android --out kernel
+          ./kptools-linux repack boot.img
+          mv new-boot.img assets_to_upload/${{ env.LATEST_TAG }}-patched-FolkPatch-boot.img
+          rm -f kernel-b kernel ramdisk.cpio new-boot.img
+
+      - name: Patch init_boot.img via LKM Ramdisk Injection
+        run: |
+          # Helper function for LKM patching
+          patch_init_boot_lkm() {
+            local ko_file=$1
+            local output_name=$2
+            
+            echo "Patching init_boot.img with $ko_file..."
+            ./magiskboot unpack init_boot.img
+            
+            mkdir -p rd
+            cd rd
+            cpio -idmv < ../ramdisk.cpio
+            
+            # Module ko copy karna
+            mkdir -p lib/modules
+            cp -f ../$ko_file lib/modules/kernelsu.ko
+            
+            # early-init block mein insmod entry insert karna
+            if [ -f init.rc ]; then
+              sed -i 's/on early-init/on early-init\n    insmod \/lib\/modules\/kernelsu.ko/g' init.rc
+            else
+              echo "on early-init" >> init.rc
+              echo "    insmod /lib/modules/kernelsu.ko" >> init.rc
+            fi
+            
+            # Repack ramdisk
+            find . | cpio -o -H newc > ../ramdisk.cpio
+            cd ..
+            rm -rf rd
+            
+            # Repack init_boot
+            ./magiskboot repack init_boot.img
+            mv new-boot.img assets_to_upload/$output_name
+            ./magiskboot cleanup
+          }
+          
+          # 3. KernelSU (Official) init_boot patching
+          patch_init_boot_lkm kernelsu-official.ko "${{ env.LATEST_TAG }}-patched-KernelSU-init_boot.img"
+          
+          # 4. KernelSU-Next (Works on both Normal and Spoof APK Managers)
+          patch_init_boot_lkm kernelsu-next.ko "${{ env.LATEST_TAG }}-patched-KernelSU-Next-init_boot.img"
+          
+          # 5. SukiSU-Ultra init_boot patching
+          patch_init_boot_lkm sukisu-ultra.ko "${{ env.LATEST_TAG }}-patched-SukiSU-Ultra-init_boot.img"
+
+      - name: Create Release and Upload Patched Partition Images
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.LATEST_TAG }}
+          name: ${{ env.LATEST_TAG }}
+          body_path: release_body.txt
+          files: assets_to_upload/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
