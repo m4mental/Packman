@@ -109,27 +109,54 @@ jobs:
           curl -L -o kpimg-android "$KP_IMG_URL"
           chmod +x kptools-linux
 
-      - name: Fetch Latest Stable GKI Modules (.ko files)
+      - name: Fetch Latest Stable GKI Modules (.ko files) and Manager APKs
         run: |
-          # 1. Official Latest Stable KernelSU Module
+          # 1. Official Latest Stable KernelSU Module & APK URL
           KSU_RELEASE=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/tiann/KernelSU/releases/latest")
           KSU_KO_URL=$(echo "$KSU_RELEASE" | jq -r '.assets[] | select(.name | contains("android14-5.15_kernelsu.ko")) | .browser_download_url')
+          KSU_APK_URL=$(echo "$KSU_RELEASE" | jq -r '.assets[] | select(.name | endswith(".apk")) | .browser_download_url' | head -n 1)
           curl -L -o kernelsu-official.ko "$KSU_KO_URL"
           
-          # 2. Latest Stable KernelSU-Next (Normal & Spoof use the same driver)
+          # 2. Latest Stable KernelSU-Next Module & APK URLs (Normal & Spoof)
           KSUN_RELEASE=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/KernelSU-Next/KernelSU-Next/releases/latest")
           KSUN_KO_URL=$(echo "$KSUN_RELEASE" | jq -r '.assets[] | select(.name == "android14-5.15_kernelsu.ko") | .browser_download_url')
           curl -L -o kernelsu-next.ko "$KSUN_KO_URL"
           
-          # 3. Latest Stable SukiSU-Ultra Module
+          KSUN_APK_NORMAL=$(echo "$KSUN_RELEASE" | jq -r '.assets[] | select(.name | contains("release.apk") and (contains("spoofed") | not)) | .browser_download_url' | head -n 1)
+          KSUN_APK_SPOOF=$(echo "$KSUN_RELEASE" | jq -r '.assets[] | select(.name | contains("spoofed") and contains(".apk")) | .browser_download_url' | head -n 1)
+          if [ -z "$KSUN_APK_NORMAL" ] || [ "$KSUN_APK_NORMAL" == "null" ]; then
+            KSUN_APK_NORMAL=$(echo "$KSUN_RELEASE" | jq -r '.assets[] | select(.name | endswith(".apk") and (contains("spoofed") | not)) | .browser_download_url' | head -n 1)
+          fi
+          
+          # 3. Latest Stable SukiSU-Ultra Module & APK URL
           SUKI_RELEASE=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/SukiSU-Ultra/SukiSU-Ultra/releases/latest")
           SUKI_KO_URL=$(echo "$SUKI_RELEASE" | jq -r '.assets[] | select(.name | contains("android14-5.15_kernelsu.ko")) | .browser_download_url')
+          SUKI_APK_URL=$(echo "$SUKI_RELEASE" | jq -r '.assets[] | select(.name | endswith(".apk")) | .browser_download_url' | head -n 1)
           if [ ! -z "$SUKI_KO_URL" ] && [ "$SUKI_KO_URL" != "null" ]; then
             curl -L -o sukisu-ultra.ko "$SUKI_KO_URL"
           else
             echo "SukiSU-Ultra GKI module not found in official assets, fallback to stable kernelsu-official."
             cp kernelsu-official.ko sukisu-ultra.ko
           fi
+          
+          # 4. Fetch Latest Stable APatch APK URL
+          APA_RELEASE=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/bmax121/APatch/releases/latest")
+          APA_APK_URL=$(echo "$APA_RELEASE" | jq -r '.assets[] | select(.name | endswith(".apk")) | .browser_download_url' | head -n 1)
+          
+          # 5. Fetch Latest Stable FolkPatch APK URL
+          FOLK_RELEASE=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/LyraVoid/FolkPatch/releases/latest")
+          FOLK_APK_URL=$(echo "$FOLK_RELEASE" | jq -r '.assets[] | select(.name | endswith(".apk")) | .browser_download_url' | head -n 1)
+          
+          # Safe fallback links agar koi query empty ya null return kare
+          if [ -z "$KSU_APK_URL" ] || [ "$KSU_APK_URL" == "null" ]; then KSU_APK_URL="https://github.com/tiann/KernelSU/releases"; fi
+          if [ -z "$KSUN_APK_NORMAL" ] || [ "$KSUN_APK_NORMAL" == "null" ]; then KSUN_APK_NORMAL="https://github.com/KernelSU-Next/KernelSU-Next/releases"; fi
+          if [ -z "$KSUN_APK_SPOOF" ] || [ "$KSUN_APK_SPOOF" == "null" ]; then KSUN_APK_SPOOF="https://github.com/KernelSU-Next/KernelSU-Next/releases"; fi
+          if [ -z "$SUKI_APK_URL" ] || [ "$SUKI_APK_URL" == "null" ]; then SUKI_APK_URL="https://github.com/SukiSU-Ultra/SukiSU-Ultra/releases"; fi
+          if [ -z "$APA_APK_URL" ] || [ "$APA_APK_URL" == "null" ]; then APA_APK_URL="https://github.com/bmax121/APatch/releases"; fi
+          if [ -z "$FOLK_APK_URL" ] || [ "$FOLK_APK_URL" == "null" ]; then FOLK_APK_URL="https://github.com/LyraVoid/FolkPatch/releases"; fi
+          
+          # Release description mein direct stable APK ke links write karna
+          echo -e "\n\n---\n### 📥 Direct Download Links for Root Manager APKs (Latest Stable):\nPatched images ko perfect compatible state mein chalane ke liye, niche diye gaye official links se latest stable manager APK file download karke install karein:\n\n1. 🌟 **KernelSU Manager:**\n   - [Download KernelSU APK]($KSU_APK_URL)\n\n2. 🌟 **KernelSU-Next Manager:**\n   - [Download Normal APK]($KSUN_APK_NORMAL)\n   - [Download Spoofed APK (SUSFS/Spoof)]($KSUN_APK_SPOOF)\n\n3. 🌟 **APatch Manager:**\n   - [Download APatch APK]($APA_APK_URL)\n\n4. 🌟 **FolkPatch Manager:**\n   - [Download FolkPatch APK]($FOLK_APK_URL)\n\n5. 🌟 **SukiSU-Ultra Manager:**\n   - [Download SukiSU-Ultra APK]($SUKI_APK_URL)" >> release_body.txt
 
       - name: Patch boot.img (APatch, FolkPatch)
         run: |
