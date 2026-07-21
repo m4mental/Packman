@@ -1,7 +1,7 @@
 name: KernelSU-Next GKI2 LKM Test Patcher
 
 on:
-  workflow_dispatch: # Manual trigger par kaam karega test ke liye
+  workflow_dispatch: # Strictly manual trigger par kaam karega test ke liye
 
 permissions:
   contents: write # Releases banane ke liye permissions
@@ -70,14 +70,14 @@ jobs:
 
       - name: Patch init_boot.img with ksud
         run: |
-          # 1. Normal KernelSU-Next Patching
+          # 1. Normal KernelSU-Next Patching (Patched prefix used to find the output image)
           ./ksud boot-patch -b "$(pwd)/init_boot.img" -m "$(pwd)/kernelsu-next.ko" --magiskboot "$(pwd)/magiskboot" --kmi android14-5.15 -o "$(pwd)"
-          GENERATED_FILE=$(find . -maxdepth 1 -name "kernelsu_restore_*.img" | head -n 1)
+          GENERATED_FILE=$(find . -maxdepth 1 -name "kernelsu_patched_*.img" | head -n 1)
           mv "$GENERATED_FILE" "KernelSU-Next-Normal-init_boot.img"
           
           # 2. Spoof KernelSU-Next Patching
           ./ksud boot-patch -b "$(pwd)/init_boot.img" -m "$(pwd)/kernelsu-next-spoof.ko" --magiskboot "$(pwd)/magiskboot" --kmi android14-5.15 -o "$(pwd)"
-          GENERATED_FILE=$(find . -maxdepth 1 -name "kernelsu_restore_*.img" | head -n 1)
+          GENERATED_FILE=$(find . -maxdepth 1 -name "kernelsu_patched_*.img" | head -n 1)
           mv "$GENERATED_FILE" "KernelSU-Next-Spoof-init_boot.img"
 
       - name: Create Test Release
