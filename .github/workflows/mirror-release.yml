@@ -1,18 +1,13 @@
-name: Root Patch Nothing Phone 2a Partition Images
+name: KernelSU-Next GKI2 LKM Test Patcher
 
 on:
-  workflow_dispatch:
-    inputs:
-      superkey:
-        description: 'APatch ke liye SuperKey dalein (FolkPatch aur baaki managers ke liye iski zaroorat nahi hai)'
-        required: true
-        default: 'Nothing2aSuperRootKey'
+  workflow_dispatch: # Strictly manual trigger par kaam karega test ke liye
 
 permissions:
-  contents: write
+  contents: write # Releases banane ke liye permissions
 
 jobs:
-  patch-all:
+  ksun-patch:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
@@ -23,211 +18,73 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y jq curl p7zip-full unzip python3
 
-      - name: Download Stock boot and init_boot from image-boot.7z
-        id: process_release
+      - name: Fetch Latest Nothing Tag and GKI Modules
+        id: fetch_urls
         run: |
-          REPO="m4mental/Nothing-phone-2a"
-          
-          # Source repo se releases fetch karna
+          # 1. Nothing OS Archive se latest version tag dhoondhna
+          REPO="spike0en/nothing_archive"
+          CODENAME="Pacman"
           RELEASES=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/$REPO/releases")
-          
-          # Latest release tag dhoondhna
-          LATEST_TAG=$(echo "$RELEASES" | jq -r '.[0].tag_name')
-          
-          if [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" == "null" ]; then
-            echo "Error: m4mental/Nothing-phone-2a ke releases nahi mile!"
-            exit 1
-          fi
-          
+          RELEASE_JSON=$(echo "$RELEASES" | jq --arg codename "$CODENAME" '[.[] | select(.tag_name | contains($codename))] | .[0]')
+          LATEST_TAG=$(echo "$RELEASE_JSON" | jq -r '.tag_name')
           echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_ENV
-          echo "Found Release: $LATEST_TAG"
           
-          # Description body save karna aur custom message add karna
-          echo "$RELEASES" | jq -r '.[0].body' > release_body.txt
-          echo -e "\n\n---\n### 🛡️ Patched Root Images Added (Compatible with Latest Stable APKs):\n- **APatch SuperKey:** \`${{ github.event.inputs.superkey }}\` (APatch app mein use karein).\n- **FolkPatch SuperKey:** Default (\`su\`).\n- **Boot Images patched:** APatch, FolkPatch.\n- **Init_Boot Images patched:** KernelSU, KernelSU-Next (Works on both Normal & Spoof APKs), SukiSU-Ultra.\n- *(ReSukiSU is excluded as requested)*" >> release_body.txt
-          
-          # Find download URL for image-boot.7z
-          IMAGE_BOOT_URL=$(echo "$RELEASES" | jq -r '.[0].assets[] | select(.name | contains("image-boot.7z")) | .browser_download_url')
-          
-          if [ -z "$IMAGE_BOOT_URL" ] || [ "$IMAGE_BOOT_URL" == "null" ]; then
-            # Fallback agar naam thoda alag ho
-            IMAGE_BOOT_URL=$(echo "$RELEASES" | jq -r '.[0].assets[] | select(.name | contains("boot.7z")) | .browser_download_url')
-          fi
-          
-          if [ -z "$IMAGE_BOOT_URL" ] || [ "$IMAGE_BOOT_URL" == "null" ]; then
-            echo "Error: image-boot.7z file nahi mili!"
-            exit 1
-          fi
-          
-          echo "Downloading image-boot.7z..."
+          # 2. image-boot.7z download aur init_boot.img extract karna
+          IMAGE_BOOT_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | contains("image-boot.7z")) | .browser_download_url')
           curl -L -o "image-boot.7z" "$IMAGE_BOOT_URL"
-          
-          echo "Extracting image-boot.7z..."
           7z x "image-boot.7z" -o"extracted_temp"
-          
-          # Find and copy boot.img and init_boot.img recursively to working directory
-          find extracted_temp/ -type f -name "boot.img" -exec cp {} . \;
           find extracted_temp/ -type f -name "init_boot.img" -exec cp {} . \;
-          
-          # Clean up temp extraction
           rm -rf extracted_temp image-boot.7z
-          
-          # Verify both files are now extracted successfully
-          if [ ! -f boot.img ]; then
-            echo "Error: boot.img extract nahi ho paya!"
-            exit 1
-          fi
-          
-          if [ ! -f init_boot.img ]; then
-            echo "Error: init_boot.img extract nahi ho paya!"
-            exit 1
-          fi
-          
-          echo "boot.img and init_boot.img successfully extracted!"
-          
-          # Original stock assets ko download folder mein save karna
-          mkdir assets_to_upload
-          echo "$RELEASES" | jq -c '.[0].assets[]' | while read -r asset; do
-            ASSET_URL=$(echo "$asset" | jq -r '.browser_download_url')
-            ASSET_NAME=$(echo "$asset" | jq -r '.name')
-            echo "Downloading stock asset: $ASSET_NAME..."
-            curl -L -o "assets_to_upload/$ASSET_NAME" "$ASSET_URL"
-          done
 
-      - name: Set up magiskboot & kptools
+          # 3. KernelSU-Next ke latest modules aur APK download links dhoondhna
+          KSUN_RELEASE=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/KernelSU-Next/KernelSU-Next/releases/latest")
+          KSUN_KO_URL=$(echo "$KSUN_RELEASE" | jq -r '.assets[] | select(.name == "android14-5.15_kernelsu.ko") | .browser_download_url')
+          KSUN_APK_SPOOF=$(echo "$KSUN_RELEASE" | jq -r '.assets[] | select(.name | contains("spoofed") and contains(".apk")) | .browser_download_url' | head -n 1)
+          
+          # Normal .ko download karna
+          curl -L -o kernelsu-next.ko "$KSUN_KO_URL"
+          
+          # Spoofed GKI Module extraction spoofed APK se
+          if [ ! -z "$KSUN_APK_SPOOF" ] && [ "$KSUN_APK_SPOOF" != "null" ]; then
+            curl -L -o ksun-spoofed.apk "$KSUN_APK_SPOOF"
+            unzip -o ksun-spoofed.apk -d ksun_spoofed_unzipped
+            SPOOF_KO_PATH=$(find ksun_spoofed_unzipped/ -type f -name "*5.15_kernelsu.ko" -o -name "*5.15*.ko" | head -n 1)
+            if [ ! -z "$SPOOF_KO_PATH" ]; then
+              cp "$SPOOF_KO_PATH" kernelsu-next-spoof.ko
+            else
+              cp kernelsu-next.ko kernelsu-next-spoof.ko
+            fi
+            rm -rf ksun_spoofed_unzipped ksun-spoofed.apk
+          else
+            cp kernelsu-next.ko kernelsu-next-spoof.ko
+          fi
+
+      - name: Set up magiskboot & ksud
         run: |
-          # Download magiskboot for Linux x86_64
+          # Setup magiskboot
           curl -L -o magiskboot "https://github.com/Uevo001/magiskboot-linux/raw/main/x86_64/magiskboot"
           chmod +x magiskboot
           
-          # Download kptools (KernelPatch tools) and kpimg-android for APatch/FolkPatch
-          KP_RELEASE=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/bmax121/KernelPatch/releases/latest")
-          KP_TOOLS_URL=$(echo "$KP_RELEASE" | jq -r '.assets[] | select(.name | contains("kptools-linux")) | .browser_download_url')
-          KP_IMG_URL=$(echo "$KP_RELEASE" | jq -r '.assets[] | select(.name | contains("kpimg-android")) | .browser_download_url')
-          
-          curl -L -o kptools-linux "$KP_TOOLS_URL"
-          curl -L -o kpimg-android "$KP_IMG_URL"
-          chmod +x kptools-linux
+          # Setup stable ksud binary (Fede2782)
+          curl -L -o ksud "https://github.com/Fede2782/KernelSU/releases/download/v1.0.5-legacy3/ksud-x86_64-unknown-linux-musl"
+          chmod +x ksud
 
-      - name: Fetch Latest Stable GKI Modules (.ko files) and Manager APKs
+      - name: Patch init_boot.img with ksud
         run: |
-          # 1. Official Latest Stable KernelSU Module & APK URL
-          KSU_RELEASE=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/tiann/KernelSU/releases/latest")
-          KSU_KO_URL=$(echo "$KSU_RELEASE" | jq -r '.assets[] | select(.name | contains("android14-5.15_kernelsu.ko")) | .browser_download_url')
-          KSU_APK_URL=$(echo "$KSU_RELEASE" | jq -r '.assets[] | select(.name | endswith(".apk")) | .browser_download_url' | head -n 1)
-          curl -L -o kernelsu-official.ko "$KSU_KO_URL"
-          
-          # 2. Latest Stable KernelSU-Next Module & APK URLs (Normal & Spoof)
-          KSUN_RELEASE=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/KernelSU-Next/KernelSU-Next/releases/latest")
-          KSUN_KO_URL=$(echo "$KSUN_RELEASE" | jq -r '.assets[] | select(.name == "android14-5.15_kernelsu.ko") | .browser_download_url')
-          curl -L -o kernelsu-next.ko "$KSUN_KO_URL"
-          
-          KSUN_APK_NORMAL=$(echo "$KSUN_RELEASE" | jq -r '.assets[] | select(.name | contains("release.apk") and (contains("spoofed") | not)) | .browser_download_url' | head -n 1)
-          KSUN_APK_SPOOF=$(echo "$KSUN_RELEASE" | jq -r '.assets[] | select(.name | contains("spoofed") and contains(".apk")) | .browser_download_url' | head -n 1)
-          if [ -z "$KSUN_APK_NORMAL" ] || [ "$KSUN_APK_NORMAL" == "null" ]; then
-            KSUN_APK_NORMAL=$(echo "$KSUN_RELEASE" | jq -r '.assets[] | select(.name | endswith(".apk") and (contains("spoofed") | not)) | .browser_download_url' | head -n 1)
-          fi
-          
-          # 3. Latest Stable SukiSU-Ultra Module & APK URL
-          SUKI_RELEASE=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/SukiSU-Ultra/SukiSU-Ultra/releases/latest")
-          SUKI_KO_URL=$(echo "$SUKI_RELEASE" | jq -r '.assets[] | select(.name | contains("android14-5.15_kernelsu.ko")) | .browser_download_url')
-          SUKI_APK_URL=$(echo "$SUKI_RELEASE" | jq -r '.assets[] | select(.name | endswith(".apk")) | .browser_download_url' | head -n 1)
-          if [ ! -z "$SUKI_KO_URL" ] && [ "$SUKI_KO_URL" != "null" ]; then
-            curl -L -o sukisu-ultra.ko "$SUKI_KO_URL"
-          else
-            echo "SukiSU-Ultra GKI module not found in official assets, fallback to stable kernelsu-official."
-            cp kernelsu-official.ko sukisu-ultra.ko
-          fi
-          
-          # 4. Fetch Latest Stable APatch APK URL
-          APA_RELEASE=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/bmax121/APatch/releases/latest")
-          APA_APK_URL=$(echo "$APA_RELEASE" | jq -r '.assets[] | select(.name | endswith(".apk")) | .browser_download_url' | head -n 1)
-          
-          # 5. Fetch Latest Stable FolkPatch APK URL
-          FOLK_RELEASE=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/LyraVoid/FolkPatch/releases/latest")
-          FOLK_APK_URL=$(echo "$FOLK_RELEASE" | jq -r '.assets[] | select(.name | endswith(".apk")) | .browser_download_url' | head -n 1)
-          
-          # Safe fallback links agar koi query empty ya null return kare
-          if [ -z "$KSU_APK_URL" ] || [ "$KSU_APK_URL" == "null" ]; then KSU_APK_URL="https://github.com/tiann/KernelSU/releases"; fi
-          if [ -z "$KSUN_APK_NORMAL" ] || [ "$KSUN_APK_NORMAL" == "null" ]; then KSUN_APK_NORMAL="https://github.com/KernelSU-Next/KernelSU-Next/releases"; fi
-          if [ -z "$KSUN_APK_SPOOF" ] || [ "$KSUN_APK_SPOOF" == "null" ]; then KSUN_APK_SPOOF="https://github.com/KernelSU-Next/KernelSU-Next/releases"; fi
-          if [ -z "$SUKI_APK_URL" ] || [ "$SUKI_APK_URL" == "null" ]; then SUKI_APK_URL="https://github.com/SukiSU-Ultra/SukiSU-Ultra/releases"; fi
-          if [ -z "$APA_APK_URL" ] || [ "$APA_APK_URL" == "null" ]; then APA_APK_URL="https://github.com/bmax121/APatch/releases"; fi
-          if [ -z "$FOLK_APK_URL" ] || [ "$FOLK_APK_URL" == "null" ]; then FOLK_APK_URL="https://github.com/LyraVoid/FolkPatch/releases"; fi
-          
-          # Release description mein direct stable APK ke links write karna
-          echo -e "\n\n---\n### 📥 Direct Download Links for Root Manager APKs (Latest Stable):\nPatched images ko perfect compatible state mein chalane ke liye, niche diye gaye official links se latest stable manager APK file download karke install karein:\n\n1. 🌟 **KernelSU Manager:**\n   - [Download KernelSU APK]($KSU_APK_URL)\n\n2. 🌟 **KernelSU-Next Manager:**\n   - [Download Normal APK]($KSUN_APK_NORMAL)\n   - [Download Spoofed APK (SUSFS/Spoof)]($KSUN_APK_SPOOF)\n\n3. 🌟 **APatch Manager:**\n   - [Download APatch APK]($APA_APK_URL)\n\n4. 🌟 **FolkPatch Manager:**\n   - [Download FolkPatch APK]($FOLK_APK_URL)\n\n5. 🌟 **SukiSU-Ultra Manager:**\n   - [Download SukiSU-Ultra APK]($SUKI_APK_URL)" >> release_body.txt
+          # Absolute paths ka use karke images patch karna (os error 2 se bachne ke liye)
+          ./ksud boot-patch -b "$(pwd)/init_boot.img" -m "$(pwd)/kernelsu-next.ko" --magiskboot "$(pwd)/magiskboot" --kmi android14-5.15 -o "$(pwd)/KernelSU-Next-Normal-init_boot.img"
+          ./ksud boot-patch -b "$(pwd)/init_boot.img" -m "$(pwd)/kernelsu-next-spoof.ko" --magiskboot "$(pwd)/magiskboot" --kmi android14-5.15 -o "$(pwd)/KernelSU-Next-Spoof-init_boot.img"
 
-      - name: Patch boot.img (APatch, FolkPatch)
-        run: |
-          # 1. APatch
-          ./kptools-linux unpack boot.img
-          mv kernel kernel-b
-          ./kptools-linux -p --image kernel-b --skey "${{ github.event.inputs.superkey }}" --kpimg kpimg-android --out kernel
-          ./kptools-linux repack boot.img
-          mv new-boot.img assets_to_upload/${{ env.LATEST_TAG }}-patched-APatch-boot.img
-          rm -f kernel-b kernel ramdisk.cpio new-boot.img
-          
-          # 2. FolkPatch
-          ./kptools-linux unpack boot.img
-          mv kernel kernel-b
-          ./kptools-linux -p --image kernel-b --skey "su" --kpimg kpimg-android --out kernel
-          ./kptools-linux repack boot.img
-          mv new-boot.img assets_to_upload/${{ env.LATEST_TAG }}-patched-FolkPatch-boot.img
-          rm -f kernel-b kernel ramdisk.cpio new-boot.img
-
-      - name: Patch init_boot.img via LKM Ramdisk Injection
-        run: |
-          # Helper function for LKM patching
-          patch_init_boot_lkm() {
-            local ko_file=$1
-            local output_name=$2
-            
-            echo "Patching init_boot.img with $ko_file..."
-            ./magiskboot unpack init_boot.img
-            
-            mkdir -p rd
-            cd rd
-            cpio -idmv < ../ramdisk.cpio
-            
-            # Module ko copy karna
-            mkdir -p lib/modules
-            cp -f ../$ko_file lib/modules/kernelsu.ko
-            
-            # early-init block mein insmod entry insert karna
-            if [ -f init.rc ]; then
-              sed -i 's/on early-init/on early-init\n    insmod \/lib\/modules\/kernelsu.ko/g' init.rc
-            else
-              echo "on early-init" >> init.rc
-              echo "    insmod /lib/modules/kernelsu.ko" >> init.rc
-            fi
-            
-            # Repack ramdisk
-            find . | cpio -o -H newc > ../ramdisk.cpio
-            cd ..
-            rm -rf rd
-            
-            # Repack init_boot
-            ./magiskboot repack init_boot.img
-            mv new-boot.img assets_to_upload/$output_name
-            ./magiskboot cleanup
-          }
-          
-          # 3. KernelSU (Official) init_boot patching
-          patch_init_boot_lkm kernelsu-official.ko "${{ env.LATEST_TAG }}-patched-KernelSU-init_boot.img"
-          
-          # 4. KernelSU-Next (Works on both Normal and Spoof APK Managers)
-          patch_init_boot_lkm kernelsu-next.ko "${{ env.LATEST_TAG }}-patched-KernelSU-Next-init_boot.img"
-          
-          # 5. SukiSU-Ultra init_boot patching
-          patch_init_boot_lkm sukisu-ultra.ko "${{ env.LATEST_TAG }}-patched-SukiSU-Ultra-init_boot.img"
-
-      - name: Create Release and Upload Patched Partition Images
+      - name: Create Test Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.LATEST_TAG }}
-          name: ${{ env.LATEST_TAG }}
-          body_path: release_body.txt
-          files: assets_to_upload/*
+          tag_name: ksun-lkm-test
+          name: KernelSU-Next GKI2 LKM Test (${{ env.LATEST_TAG }})
+          body: |
+            Test build of KernelSU-Next GKI2 LKM patched init_boot images.
+            - Stock source build: ${{ env.LATEST_TAG }}
+          files: |
+            KernelSU-Next-Normal-init_boot.img
+            KernelSU-Next-Spoof-init_boot.img
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
