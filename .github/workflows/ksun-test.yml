@@ -1,7 +1,7 @@
 name: KernelSU-Next GKI2 LKM Test Patcher
 
 on:
-  workflow_dispatch: # Strictly manual trigger par kaam karega test ke liye
+  workflow_dispatch: # Manual trigger par kaam karega test ke liye
 
 permissions:
   contents: write # Releases banane ke liye permissions
@@ -18,7 +18,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y jq curl p7zip-full unzip python3
 
-      - name: Download Stock init_boot and Fetch KernelSU-Next Modules
+      - name: Download Stock Images & Detect Exact Kernel KMI
         id: fetch_urls
         run: |
           # 1. Nothing OS Archive se latest version tag se image-boot.7z download karna
@@ -32,51 +32,105 @@ jobs:
           IMAGE_BOOT_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | contains("image-boot.7z")) | .browser_download_url')
           curl -L -o "image-boot.7z" "$IMAGE_BOOT_URL"
           7z x "image-boot.7z" -o"extracted_temp"
+          find extracted_temp/ -type f -name "boot.img" -exec cp {} . \;
           find extracted_temp/ -type f -name "init_boot.img" -exec cp {} . \;
           rm -rf extracted_temp image-boot.7z
 
-          # 2. KernelSU-Next ke latest modules aur APK download links dhoondhna
-          KSUN_RELEASE=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/KernelSU-Next/KernelSU-Next/releases/latest")
-          KSUN_KO_URL=$(echo "$KSUN_RELEASE" | jq -r '.assets[] | select(.name == "android14-5.15_kernelsu.ko") | .browser_download_url')
-          KSUN_APK_SPOOF=$(echo "$KSUN_RELEASE" | jq -r '.assets[] | select(.name | contains("spoofed") and contains(".apk")) | .browser_download_url' | head -n 1)
-          
-          # Normal .ko download karna
-          curl -L -o kernelsu-next.ko "$KSUN_KO_URL"
-          
-          # Spoofed GKI Module extraction spoofed APK se
-          if [ ! -z "$KSUN_APK_SPOOF" ] && [ "$KSUN_APK_SPOOF" != "null" ]; then
-            curl -L -o ksun-spoofed.apk "$KSUN_APK_SPOOF"
-            unzip -o ksun-spoofed.apk -d ksun_spoofed_unzipped
-            SPOOF_KO_PATH=$(find ksun_spoofed_unzipped/ -type f -name "*5.15_kernelsu.ko" -o -name "*5.15*.ko" | head -n 1)
-            if [ ! -z "$SPOOF_KO_PATH" ]; then
-              cp "$SPOOF_KO_PATH" kernelsu-next-spoof.ko
-            else
-              cp kernelsu-next.ko kernelsu-next-spoof.ko
-            fi
-            rm -rf ksun_spoofed_unzipped ksun-spoofed.apk
-          else
-            cp kernelsu-next.ko kernelsu-next-spoof.ko
-          fi
-
-      - name: Set up magiskboot & ksud
-        run: |
-          # Setup magiskboot
+          # 2. Setup magiskboot to unpack boot.img and read KMI string
           curl -L -o magiskboot "https://github.com/Uevo001/magiskboot-linux/raw/main/x86_64/magiskboot"
           chmod +x magiskboot
           
+          ./magiskboot unpack boot.img
+          
+          # Extract raw compilation kernel string (e.g. Linux version 5.15.189-android13-8...)
+          KERNEL_VERSION_STRING=$(strings kernel | grep -E "Linux version [0-9]+\.[0-9]+\.[0-9]+" | head -n 1)
+          echo "Detected Raw Kernel: $KERNEL_VERSION_STRING"
+          
+          # Extract exact KMI elements
+          KMI_VER=$(echo "$KERNEL_VERSION_STRING" | awk '{print $3}')
+          ANDROID_VER=$(echo "$KMI_VER" | grep -o -E "android[0-9]+")
+          KERNEL_VER=$(echo "$KMI_VER" | grep -o -E "^[0-9]+\.[0-9]+\.[0-9]+")
+          EXACT_KMI="${ANDROID_VER}-${KERNEL_VER}"
+          
+          # Extract major-minor (e.g., 5.15)
+          KERNEL_MAJOR_MINOR=$(echo "$KERNEL_VER" | grep -o -E "^[0-9]+\.[0-9]+")
+          DYNAMIC_KMI="${ANDROID_VER}-${KERNEL_MAJOR_MINOR}"
+          
+          # Fallback check
+          if [ -z "$EXACT_KMI" ] || [ "$EXACT_KMI" = "-" ]; then
+            EXACT_KMI="android13-5.15"
+          fi
+          if [ -z "$DYNAMIC_KMI" ] || [ "$DYNAMIC_KMI" = "-" ]; then
+            DYNAMIC_KMI="android13-5.15"
+          fi
+          
+          echo "Exact KMI for modules matching: $EXACT_KMI"
+          echo "Dynamic KMI for patching: $DYNAMIC_KMI"
+          
+          echo "EXACT_KMI=$EXACT_KMI" >> $GITHUB_ENV
+          echo "DYNAMIC_KMI=$DYNAMIC_KMI" >> $GITHUB_ENV
+          echo "ANDROID_VER=$ANDROID_VER" >> $GITHUB_ENV
+          
+          ./magiskboot cleanup
+
+      - name: Fetch Manager APKs & Extract Matching GKI Modules (.ko files)
+        run: |
+          # 1. Fetch KernelSU-Next latest stable release details
+          KSUN_RELEASE=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/KernelSU-Next/KernelSU-Next/releases/latest")
+          KSUN_APK_NORMAL=$(echo "$KSUN_RELEASE" | jq -r '.[0].assets[] | select(.name | contains("release.apk") and (contains("spoofed") | not)) | .browser_download_url' | head -n 1)
+          KSUN_APK_SPOOF=$(echo "$KSUN_RELEASE" | jq -r '.[0].assets[] | select(.name | contains("spoofed") and contains(".apk")) | .browser_download_url' | head -n 1)
+          
+          if [ -z "$KSUN_APK_NORMAL" ] || [ "$KSUN_APK_NORMAL" == "null" ]; then KSUN_APK_NORMAL="https://github.com/KernelSU-Next/KernelSU-Next/releases"; fi
+          if [ -z "$KSUN_APK_SPOOF" ] || [ "$KSUN_APK_SPOOF" == "null" ]; then KSUN_APK_SPOOF="https://github.com/KernelSU-Next/KernelSU-Next/releases"; fi
+
+          # 2. Extract Normal .ko from Normal APK matching the exact KMI
+          echo "Downloading Normal APK to extract normal .ko module..."
+          curl -L -o ksun-normal.apk "$KSUN_APK_NORMAL"
+          unzip -o ksun-normal.apk -d ksun_normal_unzipped
+          
+          NORMAL_KO_PATH=$(find ksun_normal_unzipped/ -type f -name "${{ env.EXACT_KMI }}_kernelsu.ko" -o -name "${{ env.EXACT_KMI }}*.ko" | head -n 1)
+          if [ -z "$NORMAL_KO_PATH" ]; then
+            # Fallback to the exact android_version-5.15_kernelsu.ko
+            NORMAL_KO_PATH=$(find ksun_normal_unzipped/ -type f -name "${{ env.ANDROID_VER }}-5.15_kernelsu.ko" -o -name "${{ env.ANDROID_VER }}-5.15*.ko" | head -n 1)
+          fi
+          if [ -z "$NORMAL_KO_PATH" ]; then
+            # Fallback to generic if everything else fails
+            NORMAL_KO_PATH=$(find ksun_normal_unzipped/ -type f -name "*5.15_kernelsu.ko" -o -name "*5.15*.ko" | head -n 1)
+          fi
+          echo "Found Normal Module: $NORMAL_KO_PATH"
+          cp -f "$NORMAL_KO_PATH" kernelsu-next.ko
+          rm -rf ksun_normal_unzipped ksun-normal.apk
+
+          # 3. Extract Spoofed .ko from Spoofed APK matching the exact KMI
+          echo "Downloading Spoofed APK to extract spoofed .ko module..."
+          curl -L -o ksun-spoofed.apk "$KSUN_APK_SPOOF"
+          unzip -o ksun-spoofed.apk -d ksun_spoofed_unzipped
+          
+          SPOOF_KO_PATH=$(find ksun_spoofed_unzipped/ -type f -name "${{ env.EXACT_KMI }}_kernelsu.ko" -o -name "${{ env.EXACT_KMI }}*.ko" | head -n 1)
+          if [ -z "$SPOOF_KO_PATH" ]; then
+            SPOOF_KO_PATH=$(find ksun_spoofed_unzipped/ -type f -name "${{ env.ANDROID_VER }}-5.15_kernelsu.ko" -o -name "${{ env.ANDROID_VER }}-5.15*.ko" | head -n 1)
+          fi
+          if [ -z "$SPOOF_KO_PATH" ]; then
+            SPOOF_KO_PATH=$(find ksun_spoofed_unzipped/ -type f -name "*5.15_kernelsu.ko" -o -name "*5.15*.ko" | head -n 1)
+          fi
+          echo "Found Spoofed Module: $SPOOF_KO_PATH"
+          cp -f "$SPOOF_KO_PATH" kernelsu-next-spoof.ko
+          rm -rf ksun_spoofed_unzipped ksun-spoofed.apk
+
+      - name: Set up ksud
+        run: |
           # Setup stable ksud binary (Fede2782)
           curl -L -o ksud "https://github.com/Fede2782/KernelSU/releases/download/v1.0.5-legacy3/ksud-x86_64-unknown-linux-musl"
           chmod +x ksud
 
-      - name: Patch init_boot.img with ksud
+      - name: Patch init_boot.img with ksud (Using Dynamic Micro-Matched Modules)
         run: |
-          # 1. Normal KernelSU-Next Patching (Patched prefix used to find the output image)
-          ./ksud boot-patch -b "$(pwd)/init_boot.img" -m "$(pwd)/kernelsu-next.ko" --magiskboot "$(pwd)/magiskboot" --kmi android14-5.15 -o "$(pwd)"
+          # Dynamic --kmi parameter based on exact detected GKI base
+          ./ksud boot-patch -b "$(pwd)/init_boot.img" -m "$(pwd)/kernelsu-next.ko" --magiskboot "$(pwd)/magiskboot" --kmi "${{ env.DYNAMIC_KMI }}" -o "$(pwd)"
           GENERATED_FILE=$(find . -maxdepth 1 -name "kernelsu_patched_*.img" | head -n 1)
           mv "$GENERATED_FILE" "KernelSU-Next-Normal-init_boot.img"
           
-          # 2. Spoof KernelSU-Next Patching
-          ./ksud boot-patch -b "$(pwd)/init_boot.img" -m "$(pwd)/kernelsu-next-spoof.ko" --magiskboot "$(pwd)/magiskboot" --kmi android14-5.15 -o "$(pwd)"
+          ./ksud boot-patch -b "$(pwd)/init_boot.img" -m "$(pwd)/kernelsu-next-spoof.ko" --magiskboot "$(pwd)/magiskboot" --kmi "${{ env.DYNAMIC_KMI }}" -o "$(pwd)"
           GENERATED_FILE=$(find . -maxdepth 1 -name "kernelsu_patched_*.img" | head -n 1)
           mv "$GENERATED_FILE" "KernelSU-Next-Spoof-init_boot.img"
 
@@ -88,6 +142,8 @@ jobs:
           body: |
             Test build of KernelSU-Next GKI2 LKM patched init_boot images.
             - Stock source build: ${{ env.LATEST_TAG }}
+            - Detected Exact KMI: ${{ env.EXACT_KMI }}
+            - Detected Patch KMI: ${{ env.DYNAMIC_KMI }}
           files: |
             KernelSU-Next-Normal-init_boot.img
             KernelSU-Next-Spoof-init_boot.img
