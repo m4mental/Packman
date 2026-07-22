@@ -1,7 +1,7 @@
 name: KernelSU-Next GKI2 LKM Test Patcher
 
 on:
-  workflow_dispatch: # Manual trigger par kaam karega test ke liye
+  workflow_dispatch: # Strictly manual trigger par kaam karega test ke liye
 
 permissions:
   contents: write # Releases banane ke liye permissions
@@ -77,24 +77,29 @@ jobs:
         run: |
           # 1. Fetch KernelSU-Next latest stable release details
           KSUN_RELEASE=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/KernelSU-Next/KernelSU-Next/releases/latest")
-          KSUN_APK_NORMAL=$(echo "$KSUN_RELEASE" | jq -r '.[0].assets[] | select(.name | contains("release.apk") and (contains("spoofed") | not)) | .browser_download_url' | head -n 1)
-          KSUN_APK_SPOOF=$(echo "$KSUN_RELEASE" | jq -r '.[0].assets[] | select(.name | contains("spoofed") and contains(".apk")) | .browser_download_url' | head -n 1)
           
-          if [ -z "$KSUN_APK_NORMAL" ] || [ "$KSUN_APK_NORMAL" == "null" ]; then KSUN_APK_NORMAL="https://github.com/KernelSU-Next/KernelSU-Next/releases"; fi
-          if [ -z "$KSUN_APK_SPOOF" ] || [ "$KSUN_APK_SPOOF" == "null" ]; then KSUN_APK_SPOOF="https://github.com/KernelSU-Next/KernelSU-Next/releases"; fi
+          # Corrected JQ query (removed .[0] index since /latest is a single object, not an array)
+          KSUN_APK_NORMAL=$(echo "$KSUN_RELEASE" | jq -r '.assets[] | select(.name | contains("release.apk") and (contains("spoofed") | not)) | .browser_download_url' | head -n 1)
+          KSUN_APK_SPOOF=$(echo "$KSUN_RELEASE" | jq -r '.assets[] | select(.name | contains("spoofed") and contains(".apk")) | .browser_download_url' | head -n 1)
+          
+          # Stable direct fallbacks to prevent downloading HTML web pages
+          if [ -z "$KSUN_APK_NORMAL" ] || [ "$KSUN_APK_NORMAL" == "null" ]; then 
+            KSUN_APK_NORMAL="https://github.com/KernelSU-Next/KernelSU-Next/releases/download/v3.3.0/KernelSU_Next_v3.3.0_33214-release.apk"
+          fi
+          if [ -z "$KSUN_APK_SPOOF" ] || [ "$KSUN_APK_SPOOF" == "null" ]; then 
+            KSUN_APK_SPOOF="https://github.com/KernelSU-Next/KernelSU-Next/releases/download/v3.3.0/KernelSU_Next_v3.3.0-spoofed_33214-release.apk"
+          fi
 
           # 2. Extract Normal .ko from Normal APK matching the exact KMI
-          echo "Downloading Normal APK to extract normal .ko module..."
+          echo "Downloading Normal APK from $KSUN_APK_NORMAL to extract normal .ko module..."
           curl -L -o ksun-normal.apk "$KSUN_APK_NORMAL"
           unzip -o ksun-normal.apk -d ksun_normal_unzipped
           
           NORMAL_KO_PATH=$(find ksun_normal_unzipped/ -type f -name "${{ env.EXACT_KMI }}_kernelsu.ko" -o -name "${{ env.EXACT_KMI }}*.ko" | head -n 1)
           if [ -z "$NORMAL_KO_PATH" ]; then
-            # Fallback to the exact android_version-5.15_kernelsu.ko
             NORMAL_KO_PATH=$(find ksun_normal_unzipped/ -type f -name "${{ env.ANDROID_VER }}-5.15_kernelsu.ko" -o -name "${{ env.ANDROID_VER }}-5.15*.ko" | head -n 1)
           fi
           if [ -z "$NORMAL_KO_PATH" ]; then
-            # Fallback to generic if everything else fails
             NORMAL_KO_PATH=$(find ksun_normal_unzipped/ -type f -name "*5.15_kernelsu.ko" -o -name "*5.15*.ko" | head -n 1)
           fi
           echo "Found Normal Module: $NORMAL_KO_PATH"
@@ -102,7 +107,7 @@ jobs:
           rm -rf ksun_normal_unzipped ksun-normal.apk
 
           # 3. Extract Spoofed .ko from Spoofed APK matching the exact KMI
-          echo "Downloading Spoofed APK to extract spoofed .ko module..."
+          echo "Downloading Spoofed APK from $KSUN_APK_SPOOF to extract spoofed .ko module..."
           curl -L -o ksun-spoofed.apk "$KSUN_APK_SPOOF"
           unzip -o ksun-spoofed.apk -d ksun_spoofed_unzipped
           
